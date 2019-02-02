@@ -29,6 +29,10 @@ void *read_sensor(void *p);
 int counter = 0, reader_counter = 0;
 int *writer_counter_l, *writer_counter_c, *writer_counter_r;
 
+int writer_counter_l_val = 0, writer_counter_c_val = 0, writer_counter_r_val = 0;
+int count_to_average = 0;
+FILE *fp;
+
 /**********************************************************************
 *********************        Parameters           *********************
 ***********************************************************************/
@@ -36,6 +40,7 @@ int param_q = 25;
 int *param_q_ptr;
 struct timespec param_i, limit;
 float param_t = 0.5, param_w = 1.5;
+float *param_t_ptr, *param_w_ptr;
 
 /**********************************************************************
 ******************        Circular Buffers           ******************
@@ -49,21 +54,21 @@ int buffer_index(int counter, int array_size) {
 ******************         Other functions           ******************
 ***********************************************************************/
 int return_min(int a, int b, int c) {
-	int i, smallest;
+	int i, small_val;
 	int vector[3];
 
 	vector[0] = a;
 	vector[1] = b;
 	vector[2] = c;
-	smallest = vector[0];
+	small_val = vector[0];
 
 	for (i = 0; i < 3; i++){
-	    if (vector[i] < smallest){
-	    	smallest = vector[i];
+	    if (vector[i] < small_val){
+	    	small_val = vector[i];
 	    }
 	}
 
-	return smallest;
+	return small_val;
 }
 // Calculate the real distance given a distance and theta values
 float calculate_distance(float d, float t) {
@@ -147,15 +152,62 @@ void *read_sensor(void *p) {
 		nanosleep(&param_i , &limit);
 	}
 }
+void *main_thread(void *p) {
+ 	while(1) {
+ 		float l_sum = 0, c_sum = 0, r_sum = 0;
+
+ 		int smallest = return_min(writer_counter_l_val, writer_counter_c_val, writer_counter_r_val);
+	 	if (smallest - reader_counter > 0) {
+	 		float real_distance_l = distance_buffer_l[buffer_index(reader_counter, BUFFER_SIZE)];
+	 		// fprintf(stdout, "Sensor izquierdo - distancia calculada: %f\n", real_distance_l);
+
+	 		float real_distance_c = distance_buffer_c[buffer_index(reader_counter, BUFFER_SIZE)];
+	 		// fprintf(stdout, "Sensor central - distancia calculada: %f\n", real_distance_c);
+
+	 		float real_distance_r = distance_buffer_r[buffer_index(reader_counter, BUFFER_SIZE)];
+	 		// fprintf(stdout, "Sensor derecho - distancia calculada: %f\n", real_distance_r);
+
+	 		count_to_average++;
+	 		if(count_to_average == param_q) {
+	 			float arr[3];
+	 			arr[0] = l_sum/param_q;
+	 			arr[1] = c_sum/param_q;
+	 			arr[2] = r_sum/param_q;
+
+	 			fp = fopen("tmp_result.txt", "a+");
+	 			if (calculate_sd(arr) == 0) {
+	 				fprintf(fp, "Vehiculo detectado\n");
+	 			} else {
+	 				fprintf(fp, "Obstaculo detectado\n");
+	 			}
+	 			fclose(fp);
+
+	 			l_sum = 0;
+	 			c_sum = 0;
+	 			r_sum = 0;
+	 			count_to_average = 0;
+	 		} else {
+	 			l_sum += real_distance_l;
+	 			c_sum += real_distance_c;
+	 			r_sum += real_distance_r;
+	 		}
+
+	 		reader_counter++;
+	 	}
+	 	// sleep(1);
+	 	nanosleep(&param_i , &limit);
+ 	}
+}
 
 int main(int argc, char *argv[])
 {
 	// key_t d_key_l = 11111, key_c = 2222, key_r = 3333;
 	// key_t t_key_l = 4444, t_key_c = 5555, t_key_r = 6666;
+	param_q_ptr = &param_q;
+	param_t_ptr = &param_t;
+	param_w_ptr = &param_w;
 
-	pthread_t thpointer_l, thpointer_c, thpointer_r;
-	int smallest;
-	int writer_counter_l_val = 0, writer_counter_c_val = 0, writer_counter_r_val = 0;
+	pthread_t thpointer_l, thpointer_c, thpointer_r, thpointer_main;
 	writer_counter_l = &writer_counter_l_val;
 	writer_counter_c = &writer_counter_c_val;
 	writer_counter_r = &writer_counter_r_val;
@@ -198,51 +250,48 @@ int main(int argc, char *argv[])
  	pthread_create(&thpointer_r, NULL, read_sensor, params_ptr_r);
  	pthread_detach(thpointer_r);
 
- 	int count_to_average = 0;
-
  	sleep(2);
 
- 	while(1) {
- 		float l_sum = 0, c_sum = 0, r_sum = 0;
+	// Thread 4
+	fp = fopen("tmp_result.txt", "w+");
+	fprintf(fp, "\0");
+	fclose(fp);
+	pthread_create(&thpointer_main, NULL, main_thread, (void *)&thpointer_main);
+	pthread_detach(thpointer_main);
 
- 		smallest = return_min(writer_counter_l_val, writer_counter_c_val, writer_counter_r_val);
-	 	if (smallest - reader_counter > 0) {
-	 		float real_distance_l = distance_buffer_l[buffer_index(reader_counter, BUFFER_SIZE)];
-	 		// fprintf(stdout, "Sensor izquierdo - distancia calculada: %f\n", real_distance_l);
+	while(1) {
+		int opc, par_val_q;
+		float par_val_i, par_val_t, par_val_w;
 
-	 		float real_distance_c = distance_buffer_c[buffer_index(reader_counter, BUFFER_SIZE)];
-	 		// fprintf(stdout, "Sensor central - distancia calculada: %f\n", real_distance_c);
+		printf("Parametro:\n");
+		printf("1) Intervalo (I):\n");
+		printf("2) Muestras (Q):\n");
+		printf("3) Parametro T:\n");
+		printf("4) Parametro W:\n");
+		scanf("%d", &opc);
 
-	 		float real_distance_r = distance_buffer_r[buffer_index(reader_counter, BUFFER_SIZE)];
-	 		// fprintf(stdout, "Sensor derecho - distancia calculada: %f\n", real_distance_r);
-
-	 		count_to_average++;
-	 		if(count_to_average == param_q) {
-	 			float arr[3];
-	 			arr[0] = l_sum/param_q;
-	 			arr[1] = c_sum/param_q;
-	 			arr[2] = r_sum/param_q;
-	 			if (calculate_sd(arr) == 0) {
-	 				fprintf(stdout, "Vehiculo detectado\n");
-	 			} else {
-	 				fprintf(stdout, "Obstaculo detectado\n");
-	 			}
-
-	 			l_sum = 0;
-	 			c_sum = 0;
-	 			r_sum = 0;
-	 			count_to_average = 0;
-	 		} else {
-	 			l_sum += real_distance_l;
-	 			c_sum += real_distance_c;
-	 			r_sum += real_distance_r;
-	 		}
-
-	 		reader_counter++;
-	 	}
-	 	// sleep(1);
-	 	nanosleep(&param_i , &limit);
- 	}
+		if(opc == 1){
+			printf("Ingrese un valor en segundos (Ej: 1.5):\n");
+			scanf("%f", &par_val_i);
+			param_i.tv_sec = floor(par_val_i);
+			param_i.tv_nsec = par_val_i - floor(par_val_i);
+		} else if(opc == 2) {
+			printf("Ingrese una cantidad (Ej: 20):\n");
+			scanf("%d", &par_val_q);
+			*param_q_ptr = par_val_q;
+			count_to_average = 0;
+		} else if(opc == 3) {
+			printf("Ingrese un valor mayor a 0 y menor a 1 (Ej: 0.5):\n");
+			scanf("%f", &par_val_t);
+			*param_t_ptr = par_val_t;
+		} else if(opc == 4) {
+			printf("Ingrese un valor mayor a 1 (Ej: 1.5):\n");
+			scanf("%f", &par_val_w);
+			*param_w_ptr = par_val_w;
+		} else {
+			return 1;
+		}
+	}
 
   	return 1;
 }
